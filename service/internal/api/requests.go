@@ -20,6 +20,7 @@ type BulkConesearchRequest struct {
 	Radius    float64   `json:"radius"`
 	Catalog   string    `json:"catalog"`
 	Nneighbor int       `json:"nneighbor"`
+    Oids      []string  `json:"oids"`
 }
 
 type BulkMetadataRequest struct {

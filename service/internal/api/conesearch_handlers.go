@@ -48,15 +48,14 @@ func (api *API) conesearchBulk(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, err)
 		return
 	}
-
 	if bulkRequest.Nneighbor == 0 {
 		bulkRequest.Nneighbor = 1
 	}
 	if bulkRequest.Catalog == "" {
 		bulkRequest.Catalog = "all"
 	}
-
 	result, err := api.conesearchService.BulkConesearch(
+		bulkRequest.Oids,      // Add this line
 		bulkRequest.Ra,
 		bulkRequest.Dec,
 		bulkRequest.Radius,
@@ -78,10 +77,8 @@ func (api *API) conesearchBulk(c *gin.Context) {
 		c.Writer.WriteHeader(http.StatusNoContent)
 		return
 	}
-
 	c.JSON(http.StatusOK, result)
 }
-
 // Search for objects in a given region
 //
 //		@Summary		Search for objects in a given region

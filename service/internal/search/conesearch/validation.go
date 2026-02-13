@@ -117,17 +117,36 @@ func ValidateArguments(ra, dec, radius float64, nneighbor int, catalog string) e
 }
 
 func ValidateBulkArguments(
+	oids []string,
 	ra, dec []float64,
 	radius float64,
 	nneighbor int,
 	catalog string,
 ) error {
+	// Validate that all slices have the same length
+	if len(oids) != len(ra) {
+		return NewValidationError("Oids and Ra must have the same length", fmt.Sprintf("%d", len(oids)), "oids")
+	}
+	if len(oids) != len(dec) {
+		return NewValidationError("Oids and Dec must have the same length", fmt.Sprintf("%d", len(oids)), "oids")
+	}
 	if len(ra) != len(dec) {
 		return NewValidationError("Ra and Dec must have the same length", fmt.Sprintf("%d", len(ra)), "ra")
 	}
+	
+	// Validate that slices are not empty
 	if len(ra) == 0 {
 		return NewValidationError("Ra and Dec must have at least one element", fmt.Sprintf("%d", len(ra)), "ra")
 	}
+	
+	// Validate each oid is not empty
+	for i := range oids {
+		if oids[i] == "" {
+			return NewValidationError("Oid cannot be empty", fmt.Sprintf("index %d", i), "oids")
+		}
+	}
+	
+	// Validate each ra and dec
 	for i := range ra {
 		if err := ValidateRa(ra[i]); err != nil {
 			return err
@@ -136,6 +155,7 @@ func ValidateBulkArguments(
 			return err
 		}
 	}
+	
 	if err := ValidateRadius(radius); err != nil {
 		return err
 	}

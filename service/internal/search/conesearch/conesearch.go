@@ -26,7 +26,7 @@ import (
 	"github.com/dirodriguezm/xmatch/service/internal/assertions"
 	"github.com/dirodriguezm/xmatch/service/internal/repository"
 	"github.com/dirodriguezm/xmatch/service/internal/search/knn"
-	"github.com/dirodriguezm/xmatch/service/internal/utils"
+
 
 	"github.com/dirodriguezm/healpix"
 )
@@ -162,83 +162,105 @@ func findMetadata(
 	return objects, nil
 }
 
+type BulkConesearchResult struct {
+	Oid      string
+	QueryRA  float64
+	QueryDec float64
+	Data     []MastercatResult
+}
+
 func (c *ConesearchService) BulkConesearch(
+	oids []string,
 	ra, dec []float64,
 	radius float64,
 	nneighbor int,
 	catalog string,
 	chunkSize int,
 	maxBulkConcurrency int,
-) ([]MastercatResult, error) {
-	if err := ValidateBulkArguments(ra, dec, radius, nneighbor, catalog); err != nil {
+) ([]BulkConesearchResult, error) {
+	if err := ValidateBulkArguments(oids, ra, dec, radius, nneighbor, catalog); err != nil {
 		return nil, err
 	}
 
-	radius_radians := arcsecToRadians(radius)
-	numChunks := (len(ra) + chunkSize - 1) / chunkSize
-	resultsChan := make(chan knn.KnnResult[repository.Mastercat], numChunks)
-	errChan := make(chan error, numChunks)
-	var wg sync.WaitGroup
+	type bulkResult struct {
+		oid    string
+		ra     float64
+		dec    float64
+		result knn.KnnResult[repository.Mastercat]
+	}
 
+	radiusRadians := arcsecToRadians(radius)
+	resultsChan := make(chan bulkResult)
+	errChan := make(chan error)
+	var wg sync.WaitGroup
 	sem := make(chan struct{}, maxBulkConcurrency)
 
 	for _, v := range c.mappers {
 		for i := 0; i < len(ra); i += chunkSize {
-			wg.Add(1)
-
 			end := min(i+chunkSize, len(ra))
+			chunkOids := oids[i:end]
 			chunkRa := ra[i:end]
 			chunkDec := dec[i:end]
 
-			go func(chunkRa, chunkDec []float64) {
+			wg.Add(1)
+			go func(chunkOids []string, chunkRa, chunkDec []float64, mapper *healpix.HEALPixMapper) {
+				defer wg.Done()
 				sem <- struct{}{}
-
-				defer func() {
-					<-sem
-					wg.Done()
-				}()
+				defer func() { <-sem }()
 
 				for j := range chunkRa {
 					point := healpix.RADec(chunkRa[j], chunkDec[j])
-					pixelRange := v.QueryDiscInclusive(point, radius_radians, c.Resolution)
-					pixelList := pixelRangeToList(pixelRange)
+					pixelRanges := mapper.QueryDiscInclusive(
+						point,
+						radiusRadians,
+						c.Resolution,
+					)
+					pixelList := pixelRangeToList(pixelRanges)
 					objs, err := c.getObjects(pixelList, catalog)
 					if err != nil {
 						errChan <- err
+						return
 					}
-
-					resultsChan <- knn.NearestNeighborSearch(objs, chunkRa[j], chunkDec[j], radius, nneighbor)
+					resultsChan <- bulkResult{
+						oid: chunkOids[j],
+						ra:  chunkRa[j],
+						dec: chunkDec[j],
+						result: knn.NearestNeighborSearch(
+							objs,
+							chunkRa[j],
+							chunkDec[j],
+							radius,
+							nneighbor,
+						),
+					}
 				}
-
-			}(chunkRa, chunkDec)
+			}(chunkOids, chunkRa, chunkDec, v)
 		}
 	}
 
+	// Close channels when done
 	go func() {
 		wg.Wait()
 		close(resultsChan)
 		close(errChan)
 	}()
 
-	allObjects := make([]MastercatResult, 0)
-	for result := range resultsChan {
-		allObjects = append(allObjects, ResultFromKnn(result)...)
+	finalResults := make([]BulkConesearchResult, 0)
+	for r := range resultsChan {
+		finalResults = append(finalResults, BulkConesearchResult{
+			Oid:      r.oid,
+			QueryRA:  r.ra,
+			QueryDec: r.dec,
+			Data:     ResultFromKnn(r.result),
+		})
 	}
+
+	// If any error occurred, return the first one
 	for err := range errChan {
 		return nil, err
 	}
 
-	uniqueObjects := make([]MastercatResult, 0)
-	ids := utils.Set{}
-	for i := range allObjects {
-		for j := range allObjects[i].Data {
-			if !ids.Contains(allObjects[i].Data[j].ID) {
-				uniqueObjects = append(uniqueObjects, allObjects[i])
-				ids.Add(allObjects[i].Data[j].ID)
-			}
-		}
-	}
-	return uniqueObjects, nil
+	return finalResults, nil
 }
 
 func arcsecToRadians(arcsec float64) float64 {
